@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+models/*.joblib
+data/raw/**/*
+data/training/rooms/**/*
+data/training/people_counts/*.jpg
+data/training/people_counts/*.jpeg
+data/training/people_counts/*.png
+!data/**/.gitkeep
+!data/training/people_counts/labels.example.csv
