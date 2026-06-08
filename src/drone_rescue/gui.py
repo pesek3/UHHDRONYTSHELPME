@@ -3,8 +3,24 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
+import cv2
+
 from .planner import plan_exploration
 from .rooms import ROOM_GRAPH, ROOMS, Room
+
+try:
+    from djitellopy import Tello
+except ImportError:  # pragma: no cover
+    Tello = None
+
+try:
+    from PIL import Image, ImageTk
+except ImportError:  # pragma: no cover
+    Image = None
+    ImageTk = None
+
+VIDEO_WIDTH = 360
+VIDEO_HEIGHT = 240
 
 
 ROOM_POSITIONS: dict[Room, tuple[int, int]] = {
@@ -26,6 +42,12 @@ class DroneRescueApp(tk.Tk):
         self.start_room = tk.StringVar(value=Room.RAI.value)
         self.status = tk.StringVar(value="Ready")
         self.path_labels: list[int] = []
+
+        self.tello: Tello | None = None
+        self.frame_reader = None
+        self.camera_running = False
+        self.video_photo: tk.PhotoImage | None = None
+        self.camera_status = tk.StringVar(value="Camera: stopped")
 
         self._build_layout()
         self._draw_room_graph()
@@ -59,31 +81,51 @@ class DroneRescueApp(tk.Tk):
             row=3, column=0, sticky="ew", pady=(14, 0)
         )
 
-        ttk.Separator(sidebar).grid(row=4, column=0, sticky="ew", pady=18)
+        self.camera_button = ttk.Button(sidebar, text="Start camera", command=self._toggle_camera)
+        self.camera_button.grid(row=4, column=0, sticky="ew", pady=(14, 0))
+
+        ttk.Separator(sidebar).grid(row=5, column=0, sticky="ew", pady=18)
 
         ttk.Label(sidebar, text="Visit order", font=("Segoe UI", 11, "bold")).grid(
-            row=5, column=0, sticky="w"
+            row=6, column=0, sticky="w"
         )
         self.visit_order = tk.Listbox(sidebar, height=7, activestyle="none")
-        self.visit_order.grid(row=6, column=0, sticky="ew", pady=(6, 0))
+        self.visit_order.grid(row=7, column=0, sticky="ew", pady=(6, 0))
 
         ttk.Label(sidebar, text="Flight path", font=("Segoe UI", 11, "bold")).grid(
-            row=7, column=0, sticky="w", pady=(18, 6)
+            row=8, column=0, sticky="w", pady=(18, 6)
         )
         self.path_text = tk.Text(sidebar, width=28, height=7, wrap="word")
-        self.path_text.grid(row=8, column=0, sticky="nsew")
+        self.path_text.grid(row=9, column=0, sticky="nsew")
         self.path_text.configure(state="disabled")
 
         main = ttk.Frame(self, padding=(0, 18, 18, 18))
         main.grid(row=0, column=1, sticky="nsew")
         main.columnconfigure(0, weight=1)
         main.rowconfigure(0, weight=1)
+        main.rowconfigure(1, weight=0)
+        main.rowconfigure(2, weight=0)
+        main.rowconfigure(3, weight=0)
 
         self.canvas = tk.Canvas(main, background="#eef4f8", highlightthickness=1, highlightbackground="#d8dde6")
         self.canvas.grid(row=0, column=0, sticky="nsew")
 
+        self.video_label = tk.Label(
+            main,
+            text="Camera feed stopped",
+            background="#000000",
+            foreground="#ffffff",
+            anchor="center",
+            width=VIDEO_WIDTH,
+            height=VIDEO_HEIGHT,
+        )
+        self.video_label.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
+
+        camera_status_bar = ttk.Label(main, textvariable=self.camera_status, anchor="w")
+        camera_status_bar.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+
         status_bar = ttk.Label(main, textvariable=self.status, anchor="w")
-        status_bar.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        status_bar.grid(row=3, column=0, sticky="ew", pady=(8, 0))
 
     def _draw_room_graph(self) -> None:
         self.canvas.delete("all")
@@ -177,6 +219,86 @@ class DroneRescueApp(tk.Tk):
             self.canvas.itemconfigure(f"room:{room.value}", outline="#1f7a8c", width=3)
         self.canvas.tag_lower("path-line", "room")
         self.canvas.tag_raise("path-label")
+
+    def _toggle_camera(self) -> None:
+        if self.camera_running:
+            self._stop_camera()
+        else:
+            self._start_camera()
+
+    def _start_camera(self) -> None:
+        if self.camera_running:
+            return
+        if Tello is None:
+            self.camera_status.set("Camera unavailable: install djitellopy")
+            return
+        if Image is None or ImageTk is None:
+            self.camera_status.set("Camera preview unavailable: install Pillow")
+            return
+
+        try:
+            self.tello = Tello()
+            self.tello.connect()
+            self.tello.streamon()
+            self.frame_reader = self.tello.get_frame_read()
+            self.camera_running = True
+            self.camera_button.configure(text="Stop camera")
+            self.camera_status.set("Camera started")
+            self._update_camera_frame()
+        except Exception as exc:
+            self.camera_status.set(f"Camera start failed: {exc}")
+            self._cleanup_camera()
+
+    def _stop_camera(self) -> None:
+        self._cleanup_camera()
+        self.camera_button.configure(text="Start camera")
+        self.camera_status.set("Camera stopped")
+        self.video_label.configure(image="", text="Camera feed stopped")
+        self.video_photo = None
+
+    def _cleanup_camera(self) -> None:
+        if self.frame_reader is not None and hasattr(self.frame_reader, "stop"):
+            try:
+                self.frame_reader.stop()
+            except Exception:
+                pass
+        if self.tello is not None:
+            try:
+                self.tello.streamoff()
+            except Exception:
+                pass
+            try:
+                self.tello.end()
+            except Exception:
+                pass
+        self.frame_reader = None
+        self.tello = None
+        self.camera_running = False
+
+    def _update_camera_frame(self) -> None:
+        if not self.camera_running or self.frame_reader is None:
+            return
+
+        frame = getattr(self.frame_reader, "frame", None)
+        if frame is not None:
+            self._display_video_frame(frame)
+        else:
+            self.camera_status.set("Waiting for camera feed...")
+
+        self.after(50, self._update_camera_frame)
+
+    def _display_video_frame(self, frame: object) -> None:
+        if Image is None or ImageTk is None:
+            return
+
+        try:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            image = Image.fromarray(frame)
+            image = image.resize((VIDEO_WIDTH, VIDEO_HEIGHT), Image.BILINEAR)
+            self.video_photo = ImageTk.PhotoImage(image)
+            self.video_label.configure(image=self.video_photo, text="")
+        except Exception as exc:
+            self.camera_status.set(f"Camera preview error: {exc}")
 
 
 def main() -> None:
