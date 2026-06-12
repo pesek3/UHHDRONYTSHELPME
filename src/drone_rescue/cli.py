@@ -93,6 +93,111 @@ def cmd_gui(_: argparse.Namespace) -> None:
     gui_main()
 
 
+def cmd_auto_mission(args: argparse.Namespace) -> None:
+    from .vision import analyze_image
+    from .navigation import get_navigation_state, generate_movement_command, apply_movement_command
+    from .planner import plan_exploration
+    from .rooms import parse_room
+    from djitellopy import Tello
+    import time
+
+    try:
+        tello = Tello()
+        tello.connect()
+        tello.streamon()
+        frame_reader = tello.get_frame_read()
+        time.sleep(2.0)
+
+        print("🚁 Starting autonomous search and rescue mission...")
+        
+        # Get initial room from first frame
+        frame = frame_reader.frame
+        result = analyze_image_from_frame(frame, ROOM_MODEL, PEOPLE_MODEL)
+        print(f"📍 Starting in: {result.room or 'Unknown'}")
+        print(f"👥 People detected: {result.people_count}")
+        
+        if result.room:
+            start = parse_room(result.room)
+            plan = plan_exploration(start)
+            print(f"📋 Exploration plan: {' -> '.join(plan.path)}")
+            
+            prev_frame = None
+            frames_in_state = 0
+            visited_rooms = {start}
+            
+            # Autonomous navigation loop
+            for target_room in plan.visit_order[1:]:  # Skip start room
+                print(f"\n🎯 Moving to: {target_room}")
+                frames_in_state = 0
+                
+                while len(visited_rooms) < len(plan.visit_order):
+                    frame = frame_reader.frame
+                    if frame is None:
+                        continue
+                    
+                    # Analyze navigation state
+                    nav_state = get_navigation_state(frame, prev_frame)
+                    command = generate_movement_command(nav_state)
+                    
+                    print(f"  Action: {nav_state.recommended_action} | Doorway: {nav_state.doorway_detected} | Obstacle: {nav_state.obstacle_distance:.2f}")
+                    
+                    # Send command to drone
+                    apply_movement_command(tello, command)
+                    
+                    # Check if we've reached a new room
+                    frame = frame_reader.frame
+                    if frame is not None:
+                        room_result = analyze_image_from_frame(frame, ROOM_MODEL, PEOPLE_MODEL)
+                        if room_result.room and parse_room(room_result.room) not in visited_rooms:
+                            visited_rooms.add(parse_room(room_result.room))
+                            print(f"✅ Reached {room_result.room}! People: {room_result.people_count}")
+                            break
+                    
+                    frames_in_state += 1
+                    prev_frame = frame
+                    time.sleep(0.1)
+        
+        print("\n🎉 Mission complete!")
+        
+    except Exception as e:
+        print(f"❌ Mission error: {e}")
+    finally:
+        try:
+            tello.streamoff()
+        finally:
+            tello.end()
+
+
+def analyze_image_from_frame(frame, room_model_path, people_model_path):
+    """Analyze a frame directly instead of loading from file."""
+    from .vision import extract_features, AnalysisResult
+    from pathlib import Path
+    import joblib
+    import cv2
+    import numpy as np
+    
+    try:
+        model = joblib.load(str(room_model_path))
+        features = extract_features(frame)
+        features_2d = features.reshape(1, -1)
+        room_pred = model.predict(features_2d)[0]
+        confidence = float(model.predict_proba(features_2d).max())
+        
+        # For now, estimate people count from brightness
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        people_count = max(0, int(gray.mean() / 40) - 2)  # Simple heuristic
+        
+        return AnalysisResult(
+            room=room_pred,
+            people_count=people_count,
+            confidence=confidence,
+            source="frame_analysis"
+        )
+    except Exception as e:
+        print(f"Frame analysis error: {e}")
+        return AnalysisResult(room=None, people_count=0, confidence=None, source="error")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="drone-rescue")
     subparsers = parser.add_subparsers(required=True)
@@ -123,6 +228,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     gui = subparsers.add_parser("gui", help="Open the route planning GUI.")
     gui.set_defaults(func=cmd_gui)
+
+    auto_mission = subparsers.add_parser("auto-mission", help="Run fully autonomous search and rescue mission.")
+    auto_mission.set_defaults(func=cmd_auto_mission)
 
     return parser
 

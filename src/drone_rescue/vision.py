@@ -32,6 +32,14 @@ def load_image(path: Path) -> np.ndarray:
     return image
 
 
+def augment_brightness(image: np.ndarray, factor: float) -> np.ndarray:
+    """Adjust image brightness by a factor (0.5 = darker, 1.5 = lighter)."""
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV).astype(np.float32)
+    hsv[:, :, 2] = hsv[:, :, 2] * factor
+    hsv[:, :, 2] = np.clip(hsv[:, :, 2], 0, 255)
+    return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+
 def extract_features(image: np.ndarray) -> np.ndarray:
     resized = cv2.resize(image, (160, 120))
     hsv = cv2.cvtColor(resized, cv2.COLOR_BGR2HSV)
@@ -59,10 +67,19 @@ def train_room_classifier(data_dir: Path, model_path: Path) -> dict[str, object]
     features: list[np.ndarray] = []
     labels: list[str] = []
 
+    # Brightness augmentation factors: darker, original, lighter
+    brightness_factors = [0.6, 1.0, 1.4]
+
     for room_dir in sorted(path for path in data_dir.iterdir() if path.is_dir()):
         for image_path in iter_images(room_dir):
-            features.append(extract_features(load_image(image_path)))
-            labels.append(room_dir.name.upper())
+            image = load_image(image_path)
+            room_label = room_dir.name.upper()
+            
+            # Create augmented versions with different brightness levels
+            for brightness_factor in brightness_factors:
+                augmented_image = augment_brightness(image, brightness_factor)
+                features.append(extract_features(augmented_image))
+                labels.append(room_label)
 
     if len(set(labels)) < 2:
         raise ValueError("Need training images for at least two room folders.")

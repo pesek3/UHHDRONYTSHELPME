@@ -1,0 +1,5 @@
+Training complete in 105.1s
+Samples trained: 2175
+Rooms: ['CORRIDOR', 'P1', 'P2', 'PRINTERS', 'RAI']
+Accuracy: 100.0%
+Success percentage: 100.0%
