@@ -49,6 +49,7 @@ def parse_room(value: str) -> Room:
         "TISKARNY": Room.PRINTERS,
         "TISKÁRNY": Room.PRINTERS,
         "CHODBA": Room.CORRIDOR,
+        "BUIA": Room.RAI,
     }
     if normalized in aliases:
         return aliases[normalized]

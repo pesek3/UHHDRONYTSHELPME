@@ -180,3 +180,73 @@ def analyze_image(image_path: Path, room_model_path: Path, people_model_path: Pa
         confidence=confidence,
         source=source,
     )
+
+
+def analyze_frames_360(frames: list[np.ndarray], room_model_path: Path, people_model_path: Path) -> AnalysisResult:
+    """
+    Analyze multiple frames from a 360-degree rotation to get better room ID and people count.
+    
+    Args:
+        frames: List of image frames captured during 360-degree rotation
+        room_model_path: Path to trained room classifier model
+        people_model_path: Path to trained people regressor model
+    
+    Returns:
+        AnalysisResult with aggregated results from all frames
+    """
+    if not frames:
+        raise ValueError("No frames provided for 360-degree analysis")
+    
+    room_predictions = []
+    room_confidences = []
+    people_counts = []
+    
+    # Analyze each frame
+    for frame in frames:
+        features = extract_features(frame).reshape(1, -1)
+        
+        # Room detection
+        if room_model_path.exists():
+            room_model = joblib.load(room_model_path)
+            predicted_room = str(room_model.predict(features)[0])
+            room_predictions.append(predicted_room)
+            
+            if hasattr(room_model, "predict_proba"):
+                confidence = float(np.max(room_model.predict_proba(features)))
+                room_confidences.append(confidence)
+        
+        # People counting
+        if people_model_path.exists():
+            people_model = joblib.load(people_model_path)
+            count = max(0, int(round(float(people_model.predict(features)[0]))))
+            people_counts.append(count)
+        else:
+            count = detect_people_hog(frame)
+            people_counts.append(count)
+    
+    # Aggregate results
+    # Room: use majority vote
+    room: str | None = None
+    confidence: float | None = None
+    if room_predictions:
+        # Find most common room prediction
+        from collections import Counter
+        room_counts = Counter(room_predictions)
+        room = room_counts.most_common(1)[0][0]
+        # Average confidence for the winning room
+        if room_confidences:
+            winning_confidences = [
+                room_confidences[i] for i, r in enumerate(room_predictions) if r == room
+            ]
+            confidence = float(np.mean(winning_confidences)) if winning_confidences else None
+    
+    # People: use maximum count (safest estimate - capture everyone seen in any frame)
+    people_count = max(people_counts) if people_counts else 0
+    source = "360-scan-regression" if people_model_path.exists() else "360-scan-hog"
+    
+    return AnalysisResult(
+        room=room,
+        people_count=people_count,
+        confidence=confidence,
+        source=source,
+    )

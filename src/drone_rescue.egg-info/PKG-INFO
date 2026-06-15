@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: drone-rescue
+Version: 0.1.0
+Summary: DJI Tello indoor search and rescue prototype
+Requires-Python: >=3.10
+Requires-Dist: djitellopy>=2.5.0
+Requires-Dist: opencv-python>=4.9.0
+Requires-Dist: numpy>=1.24.0
+Requires-Dist: scikit-learn>=1.3.0
+Requires-Dist: joblib>=1.3.0
+Requires-Dist: Pillow>=10.0.0

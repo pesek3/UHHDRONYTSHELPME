@@ -6,7 +6,11 @@ from tkinter import ttk
 import cv2
 
 from .planner import plan_exploration
-from .rooms import ROOM_GRAPH, ROOMS, Room
+from .rooms import ROOM_GRAPH, ROOMS, Room, parse_room
+from .vision import analyze_frames_360
+from .navigation import capture_360_scan
+from pathlib import Path
+from datetime import datetime
 
 try:
     from djitellopy import Tello
@@ -83,6 +87,31 @@ class DroneRescueApp(tk.Tk):
 
         self.camera_button = ttk.Button(sidebar, text="Start camera", command=self._toggle_camera)
         self.camera_button.grid(row=4, column=0, sticky="ew", pady=(14, 0))
+
+        ttk.Button(sidebar, text="Connect drone", command=self._connect_drone).grid(
+            row=5, column=0, sticky="ew", pady=(14, 0)
+        )
+        ttk.Button(sidebar, text="Takeoff", command=self._takeoff_drone).grid(
+            row=6, column=0, sticky="ew", pady=(6, 0)
+        )
+        ttk.Button(sidebar, text="Land", command=self._land_drone).grid(
+            row=7, column=0, sticky="ew", pady=(6, 0)
+        )
+        ttk.Button(sidebar, text="360° Scan", command=self._run_360_scan).grid(
+            row=8, column=0, sticky="ew", pady=(12, 0)
+        )
+
+        ttk.Label(sidebar, text="If room wrong, correct: ", font=("Segoe UI", 9)).grid(
+            row=9, column=0, sticky="w", pady=(12, 0)
+        )
+        self.correct_room = tk.StringVar(value=Room.RAI.value)
+        self.correct_picker = ttk.Combobox(
+            sidebar, textvariable=self.correct_room, values=[r.value for r in Room], state="readonly", width=18
+        )
+        self.correct_picker.grid(row=10, column=0, sticky="ew", pady=(6, 0))
+        ttk.Button(sidebar, text="Mark correct", command=self._mark_correction).grid(
+            row=11, column=0, sticky="ew", pady=(8, 0)
+        )
 
         ttk.Separator(sidebar).grid(row=5, column=0, sticky="ew", pady=18)
 
@@ -274,6 +303,78 @@ class DroneRescueApp(tk.Tk):
         self.frame_reader = None
         self.tello = None
         self.camera_running = False
+
+    def _connect_drone(self) -> None:
+        if Tello is None:
+            self.status.set("Tello SDK not installed")
+            return
+        if self.tello is not None:
+            self.status.set("Drone already connected")
+            return
+        try:
+            self.tello = Tello()
+            self.tello.connect()
+            self.tello.streamon()
+            self.frame_reader = self.tello.get_frame_read()
+            self.status.set("Drone connected and streaming")
+        except Exception as exc:
+            self.status.set(f"Drone connect failed: {exc}")
+            self._cleanup_camera()
+
+    def _takeoff_drone(self) -> None:
+        if self.tello is None:
+            self.status.set("Drone not connected")
+            return
+        try:
+            self.tello.takeoff()
+            self.status.set("Drone took off")
+        except Exception as exc:
+            self.status.set(f"Takeoff failed: {exc}")
+
+    def _land_drone(self) -> None:
+        if self.tello is None:
+            self.status.set("Drone not connected")
+            return
+        try:
+            self.tello.land()
+            self.status.set("Drone landed")
+        except Exception as exc:
+            self.status.set(f"Land failed: {exc}")
+
+    def _run_360_scan(self) -> None:
+        if self.tello is None or self.frame_reader is None:
+            self.status.set("Drone not connected")
+            return
+        self.status.set("Running 360° scan...")
+        self.update()
+        try:
+            frames = capture_360_scan(self.tello, self.frame_reader)
+            result = analyze_frames_360(frames, PROJECT_ROOT / "models" / "room_classifier.joblib", PROJECT_ROOT / "models" / "people_regressor.joblib")
+            if result.room:
+                self.status.set(f"Scan: {result.room} (conf {result.confidence:.2f}) people: {result.people_count}")
+            else:
+                self.status.set("Scan: unknown room")
+        except Exception as exc:
+            self.status.set(f"360° scan error: {exc}")
+
+    def _mark_correction(self) -> None:
+        # Save current frame to selected room training folder for later retraining
+        if self.frame_reader is None or getattr(self.frame_reader, 'frame', None) is None:
+            self.status.set("No camera frame available to save")
+            return
+        sel = self.correct_room.get()
+        try:
+            room_dir = Path(PROJECT_ROOT) / "data" / "training" / "rooms" / sel
+            room_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+            out_path = room_dir / f"gui_saved_{ts}.jpg"
+            import cv2
+            frame = self.frame_reader.frame
+            cv2.imwrite(str(out_path), frame)
+            self.status.set(f"Saved correction frame to {out_path.name}")
+            print(f"GUI saved correction frame to {out_path}")
+        except Exception as exc:
+            self.status.set(f"Save failed: {exc}")
 
     def _update_camera_frame(self) -> None:
         if not self.camera_running or self.frame_reader is None:
