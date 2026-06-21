@@ -25,6 +25,9 @@ except ImportError:  # pragma: no cover
 
 VIDEO_WIDTH = 360
 VIDEO_HEIGHT = 240
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+MODELS_ROOT = PROJECT_ROOT / "models"
+SCAN_PHOTO_ROOT = PROJECT_ROOT / "data" / "raw" / "scans"
 
 
 ROOM_POSITIONS: dict[Room, tuple[int, int]] = {
@@ -52,10 +55,13 @@ class DroneRescueApp(tk.Tk):
         self.camera_running = False
         self.video_photo: tk.PhotoImage | None = None
         self.camera_status = tk.StringVar(value="Camera: stopped")
+        self.manual_step_cm = tk.IntVar(value=30)
+        self.scan_count = 0
 
         self._build_layout()
         self._draw_room_graph()
         self.run_simulation()
+        self.bind_all("<KeyPress>", self._handle_keypress)
 
     def _build_layout(self) -> None:
         self.columnconfigure(0, weight=0)
@@ -81,51 +87,106 @@ class DroneRescueApp(tk.Tk):
         start_picker.grid(row=2, column=0, sticky="ew")
         start_picker.bind("<<ComboboxSelected>>", lambda _: self.run_simulation())
 
+        row = 3
         ttk.Button(sidebar, text="Simulate Route", command=self.run_simulation).grid(
-            row=3, column=0, sticky="ew", pady=(14, 0)
+            row=row, column=0, sticky="ew", pady=(14, 0)
         )
 
+        row += 1
         self.camera_button = ttk.Button(sidebar, text="Start camera", command=self._toggle_camera)
-        self.camera_button.grid(row=4, column=0, sticky="ew", pady=(14, 0))
+        self.camera_button.grid(row=row, column=0, sticky="ew", pady=(14, 0))
 
+        row += 1
         ttk.Button(sidebar, text="Connect drone", command=self._connect_drone).grid(
-            row=5, column=0, sticky="ew", pady=(14, 0)
-        )
-        ttk.Button(sidebar, text="Takeoff", command=self._takeoff_drone).grid(
-            row=6, column=0, sticky="ew", pady=(6, 0)
-        )
-        ttk.Button(sidebar, text="Land", command=self._land_drone).grid(
-            row=7, column=0, sticky="ew", pady=(6, 0)
-        )
-        ttk.Button(sidebar, text="360° Scan", command=self._run_360_scan).grid(
-            row=8, column=0, sticky="ew", pady=(12, 0)
+            row=row, column=0, sticky="ew", pady=(14, 0)
         )
 
+        row += 1
+        ttk.Button(sidebar, text="Takeoff", command=self._takeoff_drone).grid(
+            row=row, column=0, sticky="ew", pady=(6, 0)
+        )
+
+        row += 1
+        ttk.Button(sidebar, text="Land", command=self._land_drone).grid(
+            row=row, column=0, sticky="ew", pady=(6, 0)
+        )
+
+        row += 1
+        ttk.Separator(sidebar).grid(row=row, column=0, sticky="ew", pady=14)
+
+        row += 1
+        ttk.Label(sidebar, text="Manual flight", font=("Segoe UI", 11, "bold")).grid(
+            row=row, column=0, sticky="w"
+        )
+
+        row += 1
+        step_frame = ttk.Frame(sidebar)
+        step_frame.grid(row=row, column=0, sticky="ew", pady=(6, 0))
+        step_frame.columnconfigure(1, weight=1)
+        ttk.Label(step_frame, text="Step cm").grid(row=0, column=0, sticky="w")
+        ttk.Spinbox(
+            step_frame,
+            from_=20,
+            to=100,
+            increment=10,
+            textvariable=self.manual_step_cm,
+            width=6,
+        ).grid(row=0, column=1, sticky="e")
+
+        row += 1
+        pad = ttk.Frame(sidebar)
+        pad.grid(row=row, column=0, sticky="ew", pady=(8, 0))
+        for col in range(3):
+            pad.columnconfigure(col, weight=1)
+        ttk.Button(pad, text="Q", command=lambda: self._manual_move("ccw")).grid(row=0, column=0, sticky="ew")
+        ttk.Button(pad, text="W", command=lambda: self._manual_move("forward")).grid(row=0, column=1, sticky="ew")
+        ttk.Button(pad, text="E", command=lambda: self._manual_move("cw")).grid(row=0, column=2, sticky="ew")
+        ttk.Button(pad, text="A", command=lambda: self._manual_move("left")).grid(row=1, column=0, sticky="ew")
+        ttk.Button(pad, text="S", command=lambda: self._manual_move("back")).grid(row=1, column=1, sticky="ew")
+        ttk.Button(pad, text="D", command=lambda: self._manual_move("right")).grid(row=1, column=2, sticky="ew")
+
+        row += 1
+        ttk.Button(sidebar, text="J - Scan People 360", command=self._run_360_scan).grid(
+            row=row, column=0, sticky="ew", pady=(12, 0)
+        )
+
+        row += 1
         ttk.Label(sidebar, text="If room wrong, correct: ", font=("Segoe UI", 9)).grid(
-            row=9, column=0, sticky="w", pady=(12, 0)
+            row=row, column=0, sticky="w", pady=(12, 0)
         )
         self.correct_room = tk.StringVar(value=Room.RAI.value)
+
+        row += 1
         self.correct_picker = ttk.Combobox(
             sidebar, textvariable=self.correct_room, values=[r.value for r in Room], state="readonly", width=18
         )
-        self.correct_picker.grid(row=10, column=0, sticky="ew", pady=(6, 0))
+        self.correct_picker.grid(row=row, column=0, sticky="ew", pady=(6, 0))
+
+        row += 1
         ttk.Button(sidebar, text="Mark correct", command=self._mark_correction).grid(
-            row=11, column=0, sticky="ew", pady=(8, 0)
+            row=row, column=0, sticky="ew", pady=(8, 0)
         )
 
-        ttk.Separator(sidebar).grid(row=5, column=0, sticky="ew", pady=18)
+        row += 1
+        ttk.Separator(sidebar).grid(row=row, column=0, sticky="ew", pady=18)
 
+        row += 1
         ttk.Label(sidebar, text="Visit order", font=("Segoe UI", 11, "bold")).grid(
-            row=6, column=0, sticky="w"
+            row=row, column=0, sticky="w"
         )
-        self.visit_order = tk.Listbox(sidebar, height=7, activestyle="none")
-        self.visit_order.grid(row=7, column=0, sticky="ew", pady=(6, 0))
 
+        row += 1
+        self.visit_order = tk.Listbox(sidebar, height=7, activestyle="none")
+        self.visit_order.grid(row=row, column=0, sticky="ew", pady=(6, 0))
+
+        row += 1
         ttk.Label(sidebar, text="Flight path", font=("Segoe UI", 11, "bold")).grid(
-            row=8, column=0, sticky="w", pady=(18, 6)
+            row=row, column=0, sticky="w", pady=(18, 6)
         )
+
+        row += 1
         self.path_text = tk.Text(sidebar, width=28, height=7, wrap="word")
-        self.path_text.grid(row=9, column=0, sticky="nsew")
+        self.path_text.grid(row=row, column=0, sticky="nsew")
         self.path_text.configure(state="disabled")
 
         main = ttk.Frame(self, padding=(0, 18, 18, 18))
@@ -266,10 +327,11 @@ class DroneRescueApp(tk.Tk):
             return
 
         try:
-            self.tello = Tello()
-            self.tello.connect()
-            self.tello.streamon()
-            self.frame_reader = self.tello.get_frame_read()
+            if self.tello is None:
+                self.tello = Tello()
+                self.tello.connect()
+                self.tello.streamon()
+                self.frame_reader = self.tello.get_frame_read()
             self.camera_running = True
             self.camera_button.configure(text="Stop camera")
             self.camera_status.set("Camera started")
@@ -316,6 +378,9 @@ class DroneRescueApp(tk.Tk):
             self.tello.connect()
             self.tello.streamon()
             self.frame_reader = self.tello.get_frame_read()
+            self.camera_running = True
+            self.camera_button.configure(text="Stop camera")
+            self._update_camera_frame()
             self.status.set("Drone connected and streaming")
         except Exception as exc:
             self.status.set(f"Drone connect failed: {exc}")
@@ -341,21 +406,99 @@ class DroneRescueApp(tk.Tk):
         except Exception as exc:
             self.status.set(f"Land failed: {exc}")
 
+    def _handle_keypress(self, event: tk.Event) -> str | None:
+        widget_class = event.widget.winfo_class()
+        if widget_class in {"Entry", "TEntry", "Text", "TCombobox", "Listbox", "Spinbox", "TSpinbox"}:
+            return None
+
+        key = event.keysym.lower()
+        moves = {
+            "w": "forward",
+            "s": "back",
+            "a": "left",
+            "d": "right",
+            "q": "ccw",
+            "e": "cw",
+        }
+        move = moves.get(key)
+        if move is not None:
+            self._manual_move(move)
+            return "break"
+
+        if key == "j":
+            self._run_360_scan()
+            return "break"
+
+        return None
+
+    def _manual_move(self, move: str) -> None:
+        if self.tello is None:
+            self.status.set("Drone not connected")
+            return
+
+        try:
+            step_cm = int(self.manual_step_cm.get())
+        except (tk.TclError, ValueError):
+            step_cm = 30
+            self.manual_step_cm.set(step_cm)
+
+        step_cm = max(20, min(100, step_cm))
+        yaw_degrees = max(15, min(45, step_cm))
+        commands = {
+            "forward": ("move_forward", step_cm, "forward", "cm"),
+            "back": ("move_back", step_cm, "back", "cm"),
+            "left": ("move_left", step_cm, "left", "cm"),
+            "right": ("move_right", step_cm, "right", "cm"),
+            "ccw": ("rotate_counter_clockwise", yaw_degrees, "rotate left", "deg"),
+            "cw": ("rotate_clockwise", yaw_degrees, "rotate right", "deg"),
+        }
+        command = commands.get(move)
+        if command is None:
+            return
+
+        method_name, value, label, unit = command
+        try:
+            getattr(self.tello, method_name)(value)
+            self.status.set(f"Manual: {label} {value} {unit}")
+        except Exception as exc:
+            self.status.set(f"Manual move failed: {exc}")
+
     def _run_360_scan(self) -> None:
         if self.tello is None or self.frame_reader is None:
             self.status.set("Drone not connected")
             return
-        self.status.set("Running 360° scan...")
+        self.status.set("Running people scan 360°...")
         self.update()
         try:
             frames = capture_360_scan(self.tello, self.frame_reader)
-            result = analyze_frames_360(frames, PROJECT_ROOT / "models" / "room_classifier.joblib", PROJECT_ROOT / "models" / "people_regressor.joblib")
+            scan_dir = self._save_scan_frames(frames)
+            result = analyze_frames_360(
+                frames,
+                MODELS_ROOT / "room_classifier.joblib",
+                MODELS_ROOT / "people_regressor.joblib",
+            )
+            self.scan_count += 1
+            photo_note = f", photos: {scan_dir.name}" if scan_dir is not None else ""
             if result.room:
-                self.status.set(f"Scan: {result.room} (conf {result.confidence:.2f}) people: {result.people_count}")
+                confidence = f" conf {result.confidence:.2f}" if result.confidence is not None else ""
+                self.status.set(
+                    f"Scan {self.scan_count}: {result.room}{confidence} people: {result.people_count}{photo_note}"
+                )
             else:
-                self.status.set("Scan: unknown room")
+                self.status.set(f"Scan {self.scan_count}: unknown room people: {result.people_count}{photo_note}")
         except Exception as exc:
             self.status.set(f"360° scan error: {exc}")
+
+    def _save_scan_frames(self, frames: list[object]) -> Path | None:
+        if not frames:
+            return None
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        scan_dir = SCAN_PHOTO_ROOT / f"scan_{ts}"
+        scan_dir.mkdir(parents=True, exist_ok=True)
+        for index, frame in enumerate(frames, start=1):
+            cv2.imwrite(str(scan_dir / f"frame_{index:02d}.jpg"), frame)
+        return scan_dir
 
     def _mark_correction(self) -> None:
         # Save current frame to selected room training folder for later retraining

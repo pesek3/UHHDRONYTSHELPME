@@ -189,6 +189,10 @@ def _setup_abort_listener():
 
 def cmd_auto_mission(args: argparse.Namespace) -> None:
     global _abort_mission
+    raise SystemExit(
+        "auto-mission is disabled for manual-room mode. "
+        "Run: python -m drone_rescue gui, then use Scan People 360 and WASD controls."
+    )
     from .vision import analyze_frames_360
     from .navigation import (
         align_to_doorway_and_enter,
@@ -413,7 +417,7 @@ def build_parser() -> argparse.ArgumentParser:
     gui = subparsers.add_parser("gui", help="Open the route planning GUI.")
     gui.set_defaults(func=cmd_gui)
 
-    auto_mission = subparsers.add_parser("auto-mission", help="Run fully autonomous search and rescue mission.")
+    auto_mission = subparsers.add_parser("auto-mission", help="Disabled; use gui for manual-room mode.")
     auto_mission.add_argument("--start", choices=[room.value for room in Room], default="RAI", help="Starting room (default: RAI)")
     auto_mission.set_defaults(func=cmd_auto_mission)
 
